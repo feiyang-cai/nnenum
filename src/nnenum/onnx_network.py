@@ -14,11 +14,15 @@ import onnxruntime as ort
 from skl2onnx.helpers.onnx_helper import enumerate_model_node_outputs, select_model_inputs_outputs
 from onnx.helper import ValueInfoProto, make_graph, make_model
 
-from nnenum.network import NeuralNetwork, AddLayer, FlattenLayer, ReluLayer, MatMulLayer, FullyConnectedLayer
+from nnenum.network import NeuralNetwork, AddLayer, FlattenLayer, ReluLayer, MatMulLayer, FullyConnectedLayer, TaxiNetDynamicsLayer
 from nnenum.network import nn_unflatten, nn_flatten
 from nnenum.settings import Settings
 
 from nnenum.util import Freezable
+
+shared_library = "/mydata/verifyTaxiNet/libcustom_dynamics.so"
+so = ort.SessionOptions()
+so.register_custom_ops_library(shared_library)
 
 class LinearOnnxSubnetworkLayer(Freezable):
     '''a linear layer consisting of multiple onnx operators
@@ -42,7 +46,7 @@ class LinearOnnxSubnetworkLayer(Freezable):
         #print(onnx_submodel)
 
         self.model_str = onnx_submodel.SerializeToString()
-        self.sess = ort.InferenceSession(self.model_str)
+        self.sess = ort.InferenceSession(self.model_str, so)
 
         # execute to find output shape and zero_output
         t = inputs[0].type.tensor_type.elem_type
@@ -551,6 +555,8 @@ def extract_ordered_relus(model, start):
     '''extract the relu nodes in a topological order
 
     returns an ordered list of relu nodes (from model.graph.node)
+
+    FC: add TaxiNetDynamics
     '''
 
     relu_nodes = []
@@ -583,7 +589,7 @@ def extract_ordered_relus(model, start):
             modified = True
             marked_nodes.append(index)
 
-            if node.op_type == 'Relu':
+            if node.op_type == 'Relu' or node.op_type == 'TaxiNetDynamics':
                 relu_nodes.append(node)
 
             for out in node.output:
@@ -594,7 +600,7 @@ def extract_ordered_relus(model, start):
 
     return relu_nodes
 
-def make_model_with_graph(model, graph, check_model=True):
+def make_model_with_graph(model, graph, check_model=False):
     'copy a model with a new graph'
 
     onnx_model = make_model(graph)
@@ -687,7 +693,7 @@ def get_io_shapes(model):
     # but it still will execute! skip the check_model step
     new_onnx_model = make_model_with_graph(model, graph, check_model=False)
     
-    sess = ort.InferenceSession(new_onnx_model.SerializeToString())
+    sess = ort.InferenceSession(new_onnx_model.SerializeToString(), so)
 
     res = sess.run(None, input_map)
     names = [o.name for o in sess.get_outputs()]
@@ -776,7 +782,8 @@ def load_onnx_network(filename):
     while relus:
         r = relus[0]
 
-        assert r.op_type == 'Relu'
+        # FC: add TaxiNetDynamics layer
+        assert r.op_type == 'Relu' or r.op_type == 'TaxiNetDynamics'
         assert len(r.input) == 1 and len(r.output) == 1
         end_node = r.input[0]
 
@@ -788,7 +795,13 @@ def load_onnx_network(filename):
             layers.append(l)
 
         end_shape = io_shapes[end_node]
-        l = ReluLayer(len(layers), end_shape)
+        # FC: add TaxiNetDynamics layer
+        if r.op_type == 'Relu':
+            l = ReluLayer(len(layers), end_shape)
+        elif r.op_type == 'TaxiNetDynamics':
+            l = TaxiNetDynamicsLayer(len(layers), end_shape)
+        else:
+            assert False, f"unexpected op type {r.op_type}"
         layers.append(l)
         
         prev_input = r.output[0]

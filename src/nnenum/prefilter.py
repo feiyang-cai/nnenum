@@ -238,6 +238,35 @@ class Prefilter(Freezable):
         # zonotope sanity checks
         assert self.zono.mat_t is star.a_mat
         assert self.zono.center is star.bias
+    
+    def apply_dynamics_layer(self, layer, star, additional_init_box):
+        if self.simulation is not None:
+            shape = layer.get_input_shape()
+            input_tensor = nn_unflatten(self.simulation[1], shape)
+
+            if star.a_mat is not None:
+                input_tensor = input_tensor.astype(star.a_mat.dtype)
+
+            output_tensor = layer.execute(input_tensor)
+            self.simulation[1] = nn_flatten(output_tensor)
+            
+        # zonotope sanity checks
+        assert self.zono.mat_t is star.a_mat
+        assert self.zono.center is star.bias
+        ## zonotope add bounds
+        #bounds = star.lpi._get_col_bounds()[-2:]
+        self.zono.init_bounds.extend(additional_init_box)
+
+        ## how to contract the zonotope?
+        """
+        indexes = [2, 3] # 2 for p, 3 for theta
+        print(star.input_bounds_witnesses)
+        for i in indexes:
+            row = star.a_mat[i]
+            bias = star.bias[i]
+            self.zono.contract_lp(star, row, bias)
+        print(star.input_bounds_witnesses)
+        """
 
     def init_relu_layer(self, star, layer, start_time, depth):
         'initialize the layer bounds when we first get to a relu layer'

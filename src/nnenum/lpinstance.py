@@ -417,6 +417,12 @@ class LpInstance(Freezable):
 
         return rv
 
+    def del_cols(self, indices):
+        assert indices is not None and isinstance(indices, list), "expected list of indices to delete"
+        #glpk.glp_del_cols(self.lp, len(indices), glpk.intArray(indices))
+        glpk.glp_del_cols(self.lp, len(indices), glpk.as_intArray(indices))
+        self.names = [name for i, name in enumerate(self.names) if i+1 not in indices]
+
     def add_positive_cols(self, names):
         'add a certain number of columns to the LP with positive bounds'
 
