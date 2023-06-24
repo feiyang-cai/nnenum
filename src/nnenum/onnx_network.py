@@ -743,12 +743,12 @@ def load_onnx_network(filename):
     '''
 
     model = onnx.load(filename)
-    onnx.checker.check_model(model)
+    #onnx.checker.check_model(model)
 
     passes = ["extract_constant_to_initializer", "eliminate_unused_initializer"]
     
     model = remove_unused_initializers(model)
-    onnx.checker.check_model(model)
+    #onnx.checker.check_model(model)
 
     io_shapes = get_io_shapes(model)
 
