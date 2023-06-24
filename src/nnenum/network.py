@@ -173,7 +173,7 @@ class TaxiNetDynamicsLayer(Freezable):
 
         centers = None
         additional_init_box = []
-        tol = 1e-7
+        tol = 1e-6
         tol_1 = 1e-6
 
         for substep in range(self.substep):
