@@ -198,6 +198,7 @@ def process_result(shared):
     # save timing information
     if shared.had_exception.value:
         shared.result.result_str = "error"
+        return
     elif shared.had_timeout.value == 1:
         shared.result.result_str = "timeout"
     elif shared.result.found_confirmed_counterexample.value:
