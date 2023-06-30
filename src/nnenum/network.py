@@ -173,10 +173,10 @@ class TaxiNetDynamicsLayer(Freezable):
 
         centers = None
         additional_init_box = []
-        #tol = 1e-6
-        #tol_1 = 1e-6
-        tol = 1e-12
-        tol_1 = 1e-12
+        tol = 1e-6
+        tol_1 = 1e-6
+        #tol = 1e-12
+        #tol_1 = 1e-12
 
         for substep in range(self.substep):
             # solve LP for each dimension to get center
