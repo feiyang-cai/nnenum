@@ -200,6 +200,24 @@ class LpStarState(Freezable):
         self.prefilter.zono.mat_t = self.star.a_mat
         self.prefilter.zono.center = self.star.bias
 
+        witnesses_min = np.ones(len(self.star.input_bounds_witnesses)) * np.inf
+        witnesses_max = np.ones(len(self.star.input_bounds_witnesses)) * -np.inf
+
+        for d, (min_wt, max_wt) in enumerate(self.star.input_bounds_witnesses):
+            witnesses_min = np.minimum(witnesses_min, min_wt)
+            witnesses_max = np.maximum(witnesses_max, max_wt)
+            for i in range(len(additional_init_box)):
+                min_wt = np.append(min_wt, additional_init_box[i][0])
+                max_wt = np.append(max_wt, additional_init_box[i][1])
+                if d == len(self.star.input_bounds_witnesses) - 1:
+                    witnesses_min = np.append(witnesses_min, additional_init_box[i][0])
+                    witnesses_max = np.append(witnesses_max, additional_init_box[i][1])
+            self.star.input_bounds_witnesses[d][0] = min_wt
+            self.star.input_bounds_witnesses[d][1] = max_wt
+        
+        for i in range(len(additional_init_box)):
+            self.star.input_bounds_witnesses.append([witnesses_min, witnesses_max])
+
         self.prefilter.apply_dynamics_layer(layer, self.star, additional_init_box)
 
         Timers.toc('starstate.apply_linear_layer')
