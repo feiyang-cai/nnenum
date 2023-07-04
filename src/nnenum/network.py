@@ -173,10 +173,10 @@ class TaxiNetDynamicsLayer(Freezable):
 
         centers = None
         additional_init_box = []
-        tol = 1e-6
-        tol_1 = 1e-6
-        #tol = 1e-12
-        #tol_1 = 1e-12
+        tol = 1e-6 # enforce the error bound greater than this tolerance
+        tol_1 = 1e-12 # experimental: if the ub-lb is less than this tolerance, will consider it as a constant,
+                        # it is not overapproximation
+                        # so set it to 1e-12, this tolerance won't triggered
 
         for substep in range(self.substep):
             # solve LP for each dimension to get center
@@ -190,9 +190,10 @@ class TaxiNetDynamicsLayer(Freezable):
 
             consider_theta = (ubs[2] - lbs[2]) >= tol_1
             consider_p = (ubs[1] - lbs[1]) >= tol_1
-            #consider_p = True
-            #consider_theta = True
+            if not consider_theta or not consider_p:
+                print("Warning: consider_theta or consider_p is False, this is not overapproximation")
 
+            # tol_1 is not triggered, so will only jump into the first branch
             if consider_p and consider_theta:
                 # term 1
                 f_x_p = centers[0] + np.sin(centers[1]) * self.m
@@ -272,6 +273,7 @@ class TaxiNetDynamicsLayer(Freezable):
                 additional_init_box.append([term_3_theta_lb, term_3_theta_ub])
                 star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_sub_{substep}_theta_error"], term_3_theta_lb, term_3_theta_ub)
 
+            # not triggered 
             elif consider_p and not consider_theta:
                 # term 1
                 f_x_p = centers[0] + np.sin(centers[1]) * self.m
@@ -316,6 +318,7 @@ class TaxiNetDynamicsLayer(Freezable):
                 # add theta bias
                 star.bias[3] += (np.tan(centers[2]) * self.n)
         
+            # not triggered 
             elif consider_theta and not consider_p:
                 # term 1
                 f_x_theta = centers[1] + np.tan(centers[2]) * self.n
@@ -370,6 +373,7 @@ class TaxiNetDynamicsLayer(Freezable):
                 # add p bias
                 star.bias[2] += (np.sin(centers[1]) * self.m)
         
+            # not triggered 
             elif not consider_p and not consider_theta:
                 star.bias[3] += (np.tan(centers[2]) * self.n)
                 star.bias[2] += (np.sin(centers[1]) * self.m)
@@ -396,6 +400,8 @@ class TaxiNetDynamicsLayer(Freezable):
         
     def transform_zono(self, zono):
         'transform a zonotope'
+        raise NotImplementedError("transform_zono is not implemented yet")
+
         dtype = zono.center.dtype
         
         centers = None

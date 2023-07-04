@@ -20,7 +20,7 @@ from nnenum.settings import Settings
 
 from nnenum.util import Freezable
 
-shared_library = "/mydata/verifyTaxiNet/libcustom_dynamics.so"
+shared_library = "./libcustom_dynamics.so"
 so = ort.SessionOptions()
 so.register_custom_ops_library(shared_library)
 
