@@ -135,7 +135,9 @@ def main():
             star.a_mat = star.a_mat[2:4, :]
             star.bias = star.bias[2:4]
 
-            # compute the interval enclosure for the star set
+            # compute the interval enclosure for the star set to get the candidate cells
+            ## TODO: using zonotope enclosure may be faster,
+            ## but we need to solve LPs to get the candidate cells
             interval_enclosure = compute_interval_enclosure(star)
 
             ## if p is out of the range (unsafe), then clear the reachable cells
@@ -144,7 +146,7 @@ def main():
                 reachable_cells.add((-2, -2, -2, -2))
                 break
             
-            # if the theta out of the range, discard the star
+            # if theta out of the range, discard the star
             if interval_enclosure[1][0] >= len(theta_lbs) or interval_enclosure[1][1] <= 0:
                 reachable_cells.add((-3, -3, -3, -3))
                 print("warning: theta out of the range")
@@ -174,7 +176,7 @@ def main():
     Settings.ONNX_WHITELIST.append("TaxiNetDynamics")
     Settings.GLPK_TIMEOUT = 10
     Settings.PRINT_OUTPUT = True
-    Settings.TIMING_STATS = False
+    Settings.TIMING_STATS = True
     Settings.RESULT_SAVE_STARS = True
 
 
@@ -236,6 +238,7 @@ def main():
         # add the cell to reachable cells
         reachable_cells.add((p_lbs[p_idx], p_ubs[p_idx], theta_lbs[theta_idx], theta_ubs[theta_idx]))
     t_sim = time.time() - t_start_sim
+    len_reachable_cells_after_simulations = len(reachable_cells)
 
     # enumerate the network
     t_enumerate_nn = dict()
@@ -264,10 +267,13 @@ def main():
             t_get_reachable_cells = time.time() - t_start_get_reachable_cells
 
     total_time = time.time() - t_start
+    len_reachable_cells = len(reachable_cells)
     print(f"total time: {total_time}")
     print(f"simulation time: {t_sim}")
     print(f"neural network enumeration time dict for different split tolerance: {t_enumerate_nn}")
     print(f"get reachable cells time: {t_get_reachable_cells}")
+    print(f"len reachable cells after simulations: {len_reachable_cells_after_simulations}")
+    print(f"total len reachable cells: {len_reachable_cells}")
 
 if __name__ == '__main__':
     main()
