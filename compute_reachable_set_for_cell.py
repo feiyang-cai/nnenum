@@ -70,7 +70,7 @@ def main():
         p_lb_idx = math.floor((p_lb - p_lbs[0])/(p_ubs[0]-p_lbs[0])) # floor
         p_ub_idx = math.ceil((p_ub - p_lbs[0])/(p_ubs[0]-p_lbs[0])) # ceil
 
-        theta_lb_idx = math.floor((theta_lb - theta_lbs[0])/(theta_ubs[1]-theta_lbs[0])) # floor
+        theta_lb_idx = math.floor((theta_lb - theta_lbs[0])/(theta_ubs[0]-theta_lbs[0])) # floor
         theta_ub_idx = math.ceil((theta_ub - theta_lbs[0])/(theta_ubs[0]-theta_lbs[0])) # ceil
 
         assert p_lb_idx >= 0 and p_ub_idx <= len(p_lbs)
