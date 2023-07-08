@@ -178,14 +178,27 @@ class TaxiNetDynamicsLayer(Freezable):
                         # it is not overapproximation
                         # so set it to 1e-12, this tolerance won't triggered
 
+        if len(star.bias) == 3:
+            s_start = 0
+        else:
+            s_start = 2
+        u_dim = len(star.bias)-1
+        
         for substep in range(self.substep):
             # solve LP for each dimension to get center
             lbs = np.zeros((3, ), dtype=dtype)
             ubs = np.zeros((3, ), dtype=dtype)
-            for i in range(2, 5):
-                lbs[i-2] = star.minimize_output(output_index=i, maximize=False)
-                ubs[i-2] = star.minimize_output(output_index=i, maximize=True)
-                assert lbs[i-2] <= ubs[i-2], f"lbs[{i-2}]={lbs[i-2]} > ubs[{i-2}]={ubs[i-2]}"
+
+            # for p and theta
+            for i in range(s_start, s_start+2):
+                lbs[i-s_start] = star.minimize_output(output_index=i, maximize=False)
+                ubs[i-s_start] = star.minimize_output(output_index=i, maximize=True)
+                assert lbs[i-s_start] <= ubs[i-s_start], f"lbs[{i-s_start}]={lbs[i-s_start]} > ubs[{i-s_start}]={ubs[i-s_start]}"
+            
+            lbs[2] = star.minimize_output(output_index=u_dim, maximize=False)
+            ubs[2] = star.minimize_output(output_index=u_dim, maximize=True)
+            assert lbs[2] <= ubs[2], f"lbs[2]={lbs[2]} > ubs[2]={ubs[2]}"
+            
             centers = (lbs + ubs) / 2.0
 
             consider_theta = (ubs[2] - lbs[2]) >= tol_1
@@ -205,12 +218,12 @@ class TaxiNetDynamicsLayer(Freezable):
                 ## A_x_star: 2x3
                 A_x_star = np.array([[1.0, np.cos(centers[1]) * self.m, 0],
                               [0.0, 1.0, (1 + np.tan(centers[2])**2) * self.n]], dtype=dtype)
-                bias_temp = star.bias[2:].copy() - centers
-                star.a_mat[2:4] = np.matmul(A_x_star, star.a_mat[2:])
-                star.bias[2:4] = np.matmul(A_x_star, bias_temp)
+                bias_temp = star.bias[[s_start, s_start+1, -1]].copy() - centers
+                star.a_mat[s_start:s_start+2] = np.matmul(A_x_star, star.a_mat[[s_start, s_start+1, -1]])
+                star.bias[s_start:s_start+2] = np.matmul(A_x_star, bias_temp)
 
                 # term 1 + term 2
-                star.bias[2:4] += f_x
+                star.bias[s_start:s_start+2] += f_x
 
                 # term 3 p
                 ## in this implementation, theta and phi should be in the monotonic region
@@ -265,11 +278,15 @@ class TaxiNetDynamicsLayer(Freezable):
                     term_3_theta_ub += tol/2.
                     term_3_theta_lb -= tol/2.
 
-                star.a_mat = np.hstack((star.a_mat, np.array([[0.0], [0.0], [1.0], [0.0], [0.0]], dtype=dtype)))
+                temp_p = np.zeros((star.a_mat.shape[0], 1), dtype=dtype)
+                temp_p[s_start, 0] = 1.0
+                star.a_mat = np.hstack((star.a_mat, temp_p))
                 additional_init_box.append([term_3_p_lb, term_3_p_ub])
                 star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_sub_{substep}_p_error"], term_3_p_lb, term_3_p_ub)
 
-                star.a_mat = np.hstack((star.a_mat, np.array([[0.0], [0.0], [0.0], [1.0], [0.0]], dtype=dtype)))
+                temp_theta = np.zeros((star.a_mat.shape[0], 1), dtype=dtype)
+                temp_theta[s_start+1, 0] = 1.0
+                star.a_mat = np.hstack((star.a_mat, temp_theta))
                 additional_init_box.append([term_3_theta_lb, term_3_theta_ub])
                 star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_sub_{substep}_theta_error"], term_3_theta_lb, term_3_theta_ub)
 
@@ -380,23 +397,28 @@ class TaxiNetDynamicsLayer(Freezable):
         
             else:
                 raise NotImplementedError
+
         additional_init_box = np.array(additional_init_box, dtype=dtype)
         added_cols = len(additional_init_box)
         if added_cols > 0:
             num_cols = star.lpi.get_num_cols()
             del_indices = [i+1 for i in range(num_cols-added_cols, num_cols)]
-            additional_init_box = np.matmul(star.a_mat[2:4, -added_cols:], additional_init_box)
+            additional_init_box = np.matmul(star.a_mat[s_start:s_start+2, -added_cols:], additional_init_box)
             star.lpi.del_cols(del_indices)
 
             # add p error
             star.a_mat = star.a_mat[:, :-added_cols]
-            star.a_mat = np.hstack((star.a_mat, np.array([[0.0], [0.0], [1.0], [0.0], [0.0]], dtype=dtype)))
+            temp_p = np.zeros((star.a_mat.shape[0], 1), dtype=dtype)
+            temp_p[s_start, 0] = 1.0
+            star.a_mat = np.hstack((star.a_mat, temp_p))
             star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_p_error"], additional_init_box[0][0], additional_init_box[0][1])
             # add theta error
-            star.a_mat = np.hstack((star.a_mat, np.array([[0.0], [0.0], [0.0], [1.0], [0.0]], dtype=dtype)))
+            temp_theta = np.zeros((star.a_mat.shape[0], 1), dtype=dtype)
+            temp_theta[s_start+1, 0] = 1.0
+            star.a_mat = np.hstack((star.a_mat, temp_theta))
             star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_theta_error"], additional_init_box[1][0], additional_init_box[1][1])
         
-        return star, additional_init_box    
+        return star, additional_init_box   
         
     def transform_zono(self, zono):
         'transform a zonotope'
@@ -502,9 +524,13 @@ class TaxiNetDynamicsLayer(Freezable):
     
     def execute(self, state):
         rv = state.copy()
+        if state.shape[1] == 3:
+            s_start = 0
+        else:
+            s_start = 2
         for substep in range(self.substep):
-            rv[0][2] += (np.sin(rv[0][3]) * self.m)
-            rv[0][3] += (np.tan(rv[0][4]) * self.n)
+            rv[0][s_start] += (np.sin(rv[0][s_start+1]) * self.m)
+            rv[0][s_start+1] += (np.tan(rv[0][-1]) * self.n)
         return rv
 
 class ReluLayer(Freezable):
