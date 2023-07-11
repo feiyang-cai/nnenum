@@ -13,8 +13,8 @@ def main():
     parser = argparse.ArgumentParser(description='Description of your program')
 
     # Add the arguments
-    parser.add_argument('--p_idx', type=int, default=70, help='Cell index of p')
-    parser.add_argument('--theta_idx', type=int, default=70, help='Cell index of theta')
+    parser.add_argument('--p_idx', type=int, default=31, help='Cell index of p')
+    parser.add_argument('--theta_idx', type=int, default=65, help='Cell index of theta')
     parser.add_argument('--reachability_steps', type=int, default=2, help='Number of reachability steps')
     parser.add_argument('--p_range_lb', type=float, default=-11.0, help='Lower bound for p_range')
     parser.add_argument('--p_range_ub', type=float, default=+11.0, help='Upper bound for p_range')
@@ -131,9 +131,6 @@ def main():
     def get_reachable_cells(stars, reachable_cells):
 
         for star in stars:
-            # get the p and theta
-            star.a_mat = star.a_mat[2:4, :]
-            star.bias = star.bias[2:4]
 
             # compute the interval enclosure for the star set to get the candidate cells
             ## TODO: using zonotope enclosure may be faster,
@@ -185,7 +182,7 @@ def main():
     so = ort.SessionOptions()
     so.register_custom_ops_library(shared_library)
 
-    onnx_file = f"./models/system_model_{reachability_steps}_1.onnx"
+    onnx_file = f"./models/system_model_{reachability_steps}.onnx"
     network = nnenum.load_onnx_network(onnx_file)
     session = ort.InferenceSession(onnx_file, so)
 
@@ -194,6 +191,7 @@ def main():
     reachable_cells = set()
     init_box = [[-0.8, 0.8], [-0.8, 0.8]]
     init_box.extend([[p_lb, p_ub], [theta_lb, theta_ub]])
+    init_box.extend([[-0.8, 0.8], [-0.8, 0.8]])
     init_box = np.array(init_box, dtype=np.float32)
     init_bm, init_bias, init_box = compress_init_box(init_box)
     star = LpStar(init_bm, init_bias, init_box)
@@ -204,17 +202,19 @@ def main():
     z = np.random.uniform(-0.8, 0.8, size=(samples, 2)).astype(np.float32)
     p = np.random.uniform(p_lb, p_ub, size=(samples, 1)).astype(np.float32)
     theta = np.random.uniform(theta_lb, theta_ub, size=(samples, 1)).astype(np.float32)
+    z_1 = np.random.uniform(-0.8, 0.8, size=(samples, 2)).astype(np.float32)
+
     input_name = session.get_inputs()[0].name
     input_shape = session.get_inputs()[0].shape
     output_name = session.get_outputs()[0].name
 
     t_start_sim = time.time()
-    for z_i, p_i, theta_i in zip(z, p, theta):
+    for z_i, p_i, theta_i, z_1_i in zip(z, p, theta, z_1):
         assert p_i<=p_ub and p_i>=p_lb
         assert theta_i<=theta_ub and theta_i>=theta_lb
-        input_0 = np.concatenate([z_i, p_i, theta_i]).astype(np.float32).reshape(input_shape)
+        input_0 = np.concatenate([z_i, p_i, theta_i, z_1_i]).astype(np.float32).reshape(input_shape)
         res = session.run([output_name], {input_name: input_0})
-        _, _, p_, theta_ = res[0][0]
+        p_, theta_ = res[0][0]
 
         # initial check the reachable set
         ## the cells may be out of the range, filter them out
@@ -248,7 +248,7 @@ def main():
     if not reachable_cells == {(-2, -2, -2, -2)} and not reachable_cells == {(-3, -3, -3, -3)}:
         ## TODO: Sometimes the network enumeration fails, we try different split tolerance
         ## TODO: Is this still over-approximation?
-        for split_tolerance in [1e-8, 1e-7, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2]:
+        for split_tolerance in [1e-2]:
             print(f"split_tolerance={split_tolerance}")
             Settings.SPLIT_TOLERANCE = split_tolerance # small outputs get rounded to zero when deciding if splitting is possible
             result = nnenum.enumerate_network(star, network)
