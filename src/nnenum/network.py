@@ -10,6 +10,8 @@ from scipy.signal import convolve2d
 
 from nnenum.util import Freezable
 from nnenum.timerutil import Timers
+from nnenum.zonotope import Zonotope
+import math
 
 class NeuralNetwork(Freezable):
     'neural network container'
@@ -171,253 +173,165 @@ class TaxiNetDynamicsLayer(Freezable):
     def transform_star(self, star):
         dtype = star.bias.dtype
 
-        centers = None
-        additional_init_box = []
         tol = 1e-6 # enforce the error bound greater than this tolerance
-        tol_1 = 1e-12 # experimental: if the ub-lb is less than this tolerance, will consider it as a constant,
-                        # it is not overapproximation
-                        # so set it to 1e-12, this tolerance won't triggered
 
         if len(star.bias) == 3:
-            s_start = 0
+            s_start = 0 # p: 0, theta: 1, u: -1
         else:
-            s_start = 2
+            s_start = 2 # p: 2, theta: 3, u: -1
+
         u_dim = len(star.bias)-1
-        
+
+        # we only solve lps to get the center for the first substep,
+        # then we just use the center from the previous substep
+
+        # solve LP for each dimension to get center
+        lbs = np.zeros((3, ), dtype=dtype)
+        ubs = np.zeros((3, ), dtype=dtype)
+
+        # for p and theta
+        for i in range(s_start, s_start+2):
+            lbs[i-s_start] = star.minimize_output(output_index=i, maximize=False)
+            ubs[i-s_start] = star.minimize_output(output_index=i, maximize=True)
+            #assert lbs[i-s_start] <= ubs[i-s_start], f"lbs[{i-s_start}]={lbs[i-s_start]} > ubs[{i-s_start}]={ubs[i-s_start]}"
+            
+        # for u
+        lbs[2] = star.minimize_output(output_index=u_dim, maximize=False)
+        ubs[2] = star.minimize_output(output_index=u_dim, maximize=True)
+        #assert lbs[2] <= ubs[2], f"lbs[2]={lbs[2]} > ubs[2]={ubs[2]}"
+            
+        centers = (lbs + ubs) / 2.0
+
+        # create a zonotope to enclose the star,
+        # this zono will be used to compute the error bound instead of star,
+        # this will sacrifice the accuracy but will be much faster with no LPs
+        gen_mat = np.array([[ubs[0]-centers[0], 0.0, 0.0],
+                            [0.0, ubs[1]-centers[1], 0.0],
+                            [0.0, 0.0, ubs[2]-centers[2]]], dtype=dtype)
+        zono = Zonotope(centers.copy(), gen_mat)
+        error_center = np.zeros((3, ), dtype=dtype)
+
+        # firstly defining the matrix and then assigning values to it will be slightly faster 
+        # than directly defining the matrix with values
+        A_x_star = np.array([[1.0, 0.0, 0.0],
+                      [0.0, 1.0, 0.0]], dtype=dtype)
+        f_x = np.zeros((2, ), dtype=dtype)
+        #temp_p = np.zeros((zono.mat_t.shape[0], 1), dtype=dtype)
+        #temp_theta = np.zeros((zono.mat_t.shape[0], 1), dtype=dtype)
+        temp_error = np.zeros((zono.mat_t.shape[0], 2), dtype=dtype)
+
         for substep in range(self.substep):
-            # solve LP for each dimension to get center
-            lbs = np.zeros((3, ), dtype=dtype)
-            ubs = np.zeros((3, ), dtype=dtype)
+            if substep>0:
+                # we need to compute the interval bounds using the zonotope
+                bounds = zono.box_bounds()
+                lbs = bounds[:, 0]
+                ubs = bounds[:, 1]
 
-            # for p and theta
-            for i in range(s_start, s_start+2):
-                lbs[i-s_start] = star.minimize_output(output_index=i, maximize=False)
-                ubs[i-s_start] = star.minimize_output(output_index=i, maximize=True)
-                assert lbs[i-s_start] <= ubs[i-s_start], f"lbs[{i-s_start}]={lbs[i-s_start]} > ubs[{i-s_start}]={ubs[i-s_start]}"
+            sin_theta = math.sin(centers[1])
+            cos_theta = math.cos(centers[1])
+            tan_phi = math.tan(centers[2])
             
-            lbs[2] = star.minimize_output(output_index=u_dim, maximize=False)
-            ubs[2] = star.minimize_output(output_index=u_dim, maximize=True)
-            assert lbs[2] <= ubs[2], f"lbs[2]={lbs[2]} > ubs[2]={ubs[2]}"
+            # term 1
+            ## p = p + sin(theta) * m
+            ## theta = theta + tan(u) * n
+
+            ### zono and star share the same term 1
+            f_x[0] = centers[0] + sin_theta * self.m
+            f_x[1] = centers[1] + tan_phi * self.n
+
+            # term 2
+            ## A_x_star: 2x3 matrix
+            A_x_star[0][1] = cos_theta * self.m
+            A_x_star[1][2] = (1 + tan_phi**2) * self.n
+
+            ### transform the star
+            bias_temp = star.bias[[s_start, s_start+1, -1]] - centers
+            star.a_mat[s_start:s_start+2] = np.matmul(A_x_star, star.a_mat[[s_start, s_start+1, -1]])
+            star.bias[s_start:s_start+2] = np.matmul(A_x_star, bias_temp)
+
+            ### transform the zonotope and error bias
+            bias_temp = zono.center - centers
+            zono.mat_t[:2] = np.matmul(A_x_star, zono.mat_t)
+            zono.center[:2] = np.matmul(A_x_star, bias_temp)
+
+            # term 1 + term 2
+            star.bias[s_start:s_start+2] += f_x
+            zono.center[:2] += f_x
+            error_center[:2] = np.matmul(A_x_star, error_center)
+            ### the error bound is not affected by term 1
+
             
-            centers = (lbs + ubs) / 2.0
-
-            consider_theta = (ubs[2] - lbs[2]) >= tol_1
-            consider_p = (ubs[1] - lbs[1]) >= tol_1
-            if not consider_theta or not consider_p:
-                print("Warning: consider_theta or consider_p is False, this is not overapproximation")
-
-            # tol_1 is not triggered, so will only jump into the first branch
-            if consider_p and consider_theta:
-                # term 1
-                f_x_p = centers[0] + np.sin(centers[1]) * self.m
-                f_x_theta = centers[1] + np.tan(centers[2]) * self.n
-                f_x = np.array([f_x_p, f_x_theta], dtype=dtype)
-                assert f_x.shape == (2, )
-
-                # term 2
-                ## A_x_star: 2x3
-                A_x_star = np.array([[1.0, np.cos(centers[1]) * self.m, 0],
-                              [0.0, 1.0, (1 + np.tan(centers[2])**2) * self.n]], dtype=dtype)
-                bias_temp = star.bias[[s_start, s_start+1, -1]].copy() - centers
-                star.a_mat[s_start:s_start+2] = np.matmul(A_x_star, star.a_mat[[s_start, s_start+1, -1]])
-                star.bias[s_start:s_start+2] = np.matmul(A_x_star, bias_temp)
-
-                # term 1 + term 2
-                star.bias[s_start:s_start+2] += f_x
-
-                # term 3 p
-                ## in this implementation, theta and phi should be in the monotonic region
-                assert -np.pi/2.0<=lbs[1]<=ubs[1]<=np.pi/2.0, f"theta should be in the monotonic region, but it's {lbs[1]}, {ubs[1]}"
-
-
-                ### -sin(theta) range
-                lb_neg_sin_theta = -np.sin(ubs[1])
-                ub_neg_sin_theta = -np.sin(lbs[1])
-
-                ### (theta - theta_center)^ 2 range
-                lb_theta_center_sq = 0
-                ub_theta_center_sq = max((lbs[1] - centers[1])**2, (ubs[1] - centers[1])**2)
-
-                candidates = [lb_neg_sin_theta*lb_theta_center_sq, lb_neg_sin_theta*ub_theta_center_sq, 
-                              ub_neg_sin_theta*lb_theta_center_sq, ub_neg_sin_theta*ub_theta_center_sq]
-                term_3_p_ub = np.max(candidates) * 1/2 * self.m
-                term_3_p_lb = np.min(candidates) * 1/2 * self.m
-                assert term_3_p_lb <= term_3_p_ub
-                if term_3_p_ub - term_3_p_lb < tol:
-                    term_3_p_ub += tol/2.
-                    term_3_p_lb -= tol/2.
-
-
-                ## term 3, theta
-                ## in this implementation, phi should be in the monotonic region
-                assert -np.pi/2.0<=lbs[2]<=ubs[2]<=np.pi/2.0, f"phi should be in the monotonic region, but it's {lbs[2]}, {ubs[2]}"
-                ### tan(phi) range
-                lb_tan_phi = np.tan(lbs[2])
-                ub_tan_phi = np.tan(ubs[2])
-
-                ### (phi - phi_center)^ 2 range
-                lb_phi_center_sq = 0
-                ub_phi_center_sq = max((lbs[2] - centers[2])**2, (ubs[2] - centers[2])**2)
-
-                ### tan(phi) ^ 2 + 1 range
-                if lb_tan_phi * ub_tan_phi >= 0:
-                    lb_tan_phi_sq_plus_1 = min(lb_tan_phi**2 + 1, ub_tan_phi**2 + 1)
-                else:
-                    lb_tan_phi_sq_plus_1 = 1
-                ub_tan_phi_sq_plus_1 = max(lb_tan_phi**2 + 1, ub_tan_phi**2 + 1)
-
-                candidates = [lb_tan_phi*lb_phi_center_sq*lb_tan_phi_sq_plus_1, lb_tan_phi*lb_phi_center_sq*ub_tan_phi_sq_plus_1,
-                              lb_tan_phi*ub_phi_center_sq*lb_tan_phi_sq_plus_1, lb_tan_phi*ub_phi_center_sq*ub_tan_phi_sq_plus_1,
-                              ub_tan_phi*lb_phi_center_sq*lb_tan_phi_sq_plus_1, ub_tan_phi*lb_phi_center_sq*ub_tan_phi_sq_plus_1,
-                              ub_tan_phi*ub_phi_center_sq*lb_tan_phi_sq_plus_1, ub_tan_phi*ub_phi_center_sq*ub_tan_phi_sq_plus_1]
-                term_3_theta_ub = np.max(candidates) * self.n
-                term_3_theta_lb = np.min(candidates) * self.n
-
-                assert term_3_theta_lb <= term_3_theta_ub, f"term_3_theta_lb={term_3_theta_lb} > term_3_theta_ub={term_3_theta_ub}"
-                if term_3_theta_ub - term_3_theta_lb < tol:
-                    term_3_theta_ub += tol/2.
-                    term_3_theta_lb -= tol/2.
-
-                temp_p = np.zeros((star.a_mat.shape[0], 1), dtype=dtype)
-                temp_p[s_start, 0] = 1.0
-                star.a_mat = np.hstack((star.a_mat, temp_p))
-                additional_init_box.append([term_3_p_lb, term_3_p_ub])
-                star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_sub_{substep}_p_error"], term_3_p_lb, term_3_p_ub)
-
-                temp_theta = np.zeros((star.a_mat.shape[0], 1), dtype=dtype)
-                temp_theta[s_start+1, 0] = 1.0
-                star.a_mat = np.hstack((star.a_mat, temp_theta))
-                additional_init_box.append([term_3_theta_lb, term_3_theta_ub])
-                star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_sub_{substep}_theta_error"], term_3_theta_lb, term_3_theta_ub)
-
-            # not triggered 
-            elif consider_p and not consider_theta:
-                # term 1
-                f_x_p = centers[0] + np.sin(centers[1]) * self.m
-                f_x = np.array([f_x_p], dtype=dtype)
-                assert f_x.shape == (1, )
-
-                # term 2
-                ## A_x_star: 1x3
-                A_x_star = np.array([[1.0, np.cos(centers[1]) * self.m, 0]], dtype=dtype)
-                bias_temp = star.bias[2:].copy() - centers
-                star.a_mat[2:3] = np.matmul(A_x_star, star.a_mat[2:])
-                star.bias[2:3] = np.matmul(A_x_star, bias_temp)
-
-                star.bias[2:3] += f_x
-
-                # term 3 p
-                ## in this implementation, theta and phi should be in the monotonic region
-                assert -np.pi/2.0<=lbs[1]<ubs[1]<=np.pi/2.0, f"theta should be in the monotonic region, but it's {lbs[1]}, {ubs[1]}"
-
-
-                ### -sin(theta) range
-                lb_neg_sin_theta = -np.sin(ubs[1])
-                ub_neg_sin_theta = -np.sin(lbs[1])
-
-                ### (theta - theta_center)^ 2 range
-                lb_theta_center_sq = 0
-                ub_theta_center_sq = max((lbs[1] - centers[1])**2, (ubs[1] - centers[1])**2)
-
-                candidates = [lb_neg_sin_theta*lb_theta_center_sq, lb_neg_sin_theta*ub_theta_center_sq, 
-                              ub_neg_sin_theta*lb_theta_center_sq, ub_neg_sin_theta*ub_theta_center_sq]
-                term_3_p_ub = np.max(candidates) * 1/2 * self.m
-                term_3_p_lb = np.min(candidates) * 1/2 * self.m
-                assert term_3_p_lb < term_3_p_ub
-                if term_3_p_ub - term_3_p_lb < tol:
-                    term_3_p_ub += tol/2.
-                    term_3_p_lb -= tol/2.
-
-                star.a_mat = np.hstack((star.a_mat, np.array([[0.0], [0.0], [1.0], [0.0], [0.0]], dtype=dtype)))
-                additional_init_box.append([term_3_p_lb, term_3_p_ub])
-                star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_sub_{substep}_p_error"], term_3_p_lb, term_3_p_ub)
-
-                # add theta bias
-                star.bias[3] += (np.tan(centers[2]) * self.n)
-        
-            # not triggered 
-            elif consider_theta and not consider_p:
-                # term 1
-                f_x_theta = centers[1] + np.tan(centers[2]) * self.n
-                f_x = np.array([f_x_theta], dtype=dtype)
-                assert f_x.shape == (1, )
-
-                # term 2
-                ## A_x_star: 1x3
-                A_x_star = np.array([[0.0, 1.0, (1 + np.tan(centers[2])**2) * self.n]], dtype=dtype)
-                bias_temp = star.bias[2:].copy() - centers
-                star.a_mat[3:4] = np.matmul(A_x_star, star.a_mat[2:])
-                star.bias[3:4] = np.matmul(A_x_star, bias_temp)
-
-                # term 1 + term 2
-                star.bias[3:4] += f_x
-
-
-                ## term 3, theta
-                ## in this implementation, phi should be in the monotonic region
-                assert -np.pi/2.0<=lbs[2]<=ubs[2]<=np.pi/2.0, f"phi should be in the monotonic region, but it's {lbs[2]}, {ubs[2]}"
-                ### tan(phi) range
-                lb_tan_phi = np.tan(lbs[2])
-                ub_tan_phi = np.tan(ubs[2])
-
-                ### (phi - phi_center)^ 2 range
-                lb_phi_center_sq = 0
-                ub_phi_center_sq = max((lbs[2] - centers[2])**2, (ubs[2] - centers[2])**2)
-
-                ### tan(phi) ^ 2 + 1 range
-                if lb_tan_phi * ub_tan_phi >= 0:
-                    lb_tan_phi_sq_plus_1 = min(lb_tan_phi**2 + 1, ub_tan_phi**2 + 1)
-                else:
-                    lb_tan_phi_sq_plus_1 = 1
-                ub_tan_phi_sq_plus_1 = max(lb_tan_phi**2 + 1, ub_tan_phi**2 + 1)
-
-                candidates = [lb_tan_phi*lb_phi_center_sq*lb_tan_phi_sq_plus_1, lb_tan_phi*lb_phi_center_sq*ub_tan_phi_sq_plus_1,
-                              lb_tan_phi*ub_phi_center_sq*lb_tan_phi_sq_plus_1, lb_tan_phi*ub_phi_center_sq*ub_tan_phi_sq_plus_1,
-                              ub_tan_phi*lb_phi_center_sq*lb_tan_phi_sq_plus_1, ub_tan_phi*lb_phi_center_sq*ub_tan_phi_sq_plus_1,
-                              ub_tan_phi*ub_phi_center_sq*lb_tan_phi_sq_plus_1, ub_tan_phi*ub_phi_center_sq*ub_tan_phi_sq_plus_1]
-                term_3_theta_ub = np.max(candidates) * self.n
-                term_3_theta_lb = np.min(candidates) * self.n
-
-                assert term_3_theta_lb <= term_3_theta_ub, f"term_3_theta_lb={term_3_theta_lb} > term_3_theta_ub={term_3_theta_ub}"
-                if term_3_theta_ub - term_3_theta_lb < tol:
-                    term_3_theta_ub += tol/2.
-                    term_3_theta_lb -= tol/2.
-
-                star.a_mat = np.hstack((star.a_mat, np.array([[0.0], [0.0], [0.0], [1.0], [0.0]], dtype=dtype)))
-                additional_init_box.append([term_3_theta_lb, term_3_theta_ub])
-                star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_sub_{substep}_theta_error"], term_3_theta_lb, term_3_theta_ub)
-
-                # add p bias
-                star.bias[2] += (np.sin(centers[1]) * self.m)
-        
-            # not triggered 
-            elif not consider_p and not consider_theta:
-                star.bias[3] += (np.tan(centers[2]) * self.n)
-                star.bias[2] += (np.sin(centers[1]) * self.m)
-        
+            # term 3 p
+            ## in this implementation, theta and phi should be in the monotonic region
+            #assert -np.pi/2.0<=lbs[1]<=ubs[1]<=np.pi/2.0, f"theta should be in the monotonic region, but it's {lbs[1]}, {ubs[1]}"
+            #assert lbs[1]<=centers[1]<=ubs[1], f"center should be in the range of [{lbs[1]}, {ubs[1]}], but it's {centers[1]}, substep={substep}"
+            temp = max((lbs[1] - centers[1])**2, (ubs[1] - centers[1])**2)*1/2*self.m
+            if lbs[1] >= 0:
+                term_3_p_ub = 0
+                term_3_p_lb = -math.sin(ubs[1]) * temp
+            elif ubs[1] <= 0:
+                term_3_p_lb = 0
+                term_3_p_ub = -math.sin(lbs[1]) * temp
             else:
-                raise NotImplementedError
+                term_3_p_lb = -math.sin(ubs[1]) * temp
+                term_3_p_ub = -math.sin(lbs[1]) * temp
+            #assert term_3_p_lb <= term_3_p_ub
 
-        additional_init_box = np.array(additional_init_box, dtype=dtype)
-        added_cols = len(additional_init_box)
-        if added_cols > 0:
-            num_cols = star.lpi.get_num_cols()
-            del_indices = [i+1 for i in range(num_cols-added_cols, num_cols)]
-            additional_init_box = np.matmul(star.a_mat[s_start:s_start+2, -added_cols:], additional_init_box)
-            star.lpi.del_cols(del_indices)
 
-            # add p error
-            star.a_mat = star.a_mat[:, :-added_cols]
-            temp_p = np.zeros((star.a_mat.shape[0], 1), dtype=dtype)
-            temp_p[s_start, 0] = 1.0
-            star.a_mat = np.hstack((star.a_mat, temp_p))
-            star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_p_error"], additional_init_box[0][0], additional_init_box[0][1])
-            # add theta error
-            temp_theta = np.zeros((star.a_mat.shape[0], 1), dtype=dtype)
-            temp_theta[s_start+1, 0] = 1.0
-            star.a_mat = np.hstack((star.a_mat, temp_theta))
-            star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_theta_error"], additional_init_box[1][0], additional_init_box[1][1])
-        
+            ## term 3, theta
+            ## in this implementation, phi should be in the monotonic region
+            #assert -np.pi/2.0<=lbs[2]<=ubs[2]<=np.pi/2.0, f"phi should be in the monotonic region, but it's {lbs[2]}, {ubs[2]}"
+            #assert lbs[2]<=centers[2]<=ubs[2], f"center should be in the range of [{lbs[2]}, {ubs[2]}], but it's {centers[2]}, substep={substep}"
+
+            temp_0 = max((lbs[2] - centers[2])**2, (ubs[2] - centers[2])**2)*self.n
+            if lbs[2] >= 0:
+                tan_phi = math.tan(ubs[2])
+                term_3_theta_lb = 0.0
+                term_3_theta_ub = tan_phi * (tan_phi ** 2 + 1) * temp_0
+            elif ubs[2] <= 0:
+                tan_phi = math.tan(lbs[2])
+                term_3_theta_lb = tan_phi * (tan_phi ** 2 + 1) * temp_0
+                term_3_theta_ub = 0.0
+            else:
+                tan_lb = math.tan(lbs[2])
+                tan_ub = math.tan(ubs[2])
+                temp_1 = max(tan_lb ** 2, tan_ub ** 2) + 1
+                term_3_theta_lb = tan_lb * temp_1 * temp_0
+                term_3_theta_ub = tan_ub * temp_1 * temp_0
+
+            #assert term_3_theta_lb <= term_3_theta_ub, f"term_3_theta_lb={term_3_theta_lb} > term_3_theta_ub={term_3_theta_ub}"
+
+            zono.mat_t = np.concatenate((zono.mat_t, temp_error), axis=1)
+
+            zono.mat_t[0, -2] = (term_3_p_ub - term_3_p_lb) / 2.0
+            zono.center[0] += (term_3_p_ub + term_3_p_lb) / 2.0
+            error_center[0] += (term_3_p_ub + term_3_p_lb) / 2.0
+
+            zono.mat_t[1, -1] = (term_3_theta_ub - term_3_theta_lb) / 2.0
+            zono.center[1] += (term_3_theta_ub + term_3_theta_lb) / 2.0
+            error_center[1] += (term_3_theta_ub + term_3_theta_lb) / 2.0
+            zono.init_bounds.extend([(-1, 1), (-1, 1)])
+
+            # transform the centers
+            centers[:2] = f_x.copy()
+
+        # add p error
+        errors = np.sum(zono.mat_t[:, -40:], axis=1)
+        if errors[0] < tol:
+            errors[0] = tol
+        if errors[1] < tol:
+            errors[1] = tol
+        additional_init_box = np.array([[error_center[0] - errors[0], error_center[0] + errors[0]],
+                                       [error_center[1] - errors[1], error_center[1] + errors[1]]], dtype=dtype)
+
+        temp = np.zeros((star.a_mat.shape[0], 2), dtype=dtype)
+        temp[s_start, 0] = 1.0
+        temp[s_start+1, 1] = 1.0
+
+        star.a_mat = np.concatenate((star.a_mat, temp), axis=1)
+        star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_p_error"], additional_init_box[0][0], additional_init_box[0][1])
+        star.lpi.add_double_bounded_cols([f"l_{self.layer_num}_theta_error"], additional_init_box[1][0], additional_init_box[1][1])
+
         return star, additional_init_box   
         
     def transform_zono(self, zono):

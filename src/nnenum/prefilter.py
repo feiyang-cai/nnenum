@@ -249,7 +249,7 @@ class Prefilter(Freezable):
 
             output_tensor = layer.execute(input_tensor)
             self.simulation[1] = nn_flatten(output_tensor)
-            
+
         # zonotope sanity checks
         assert self.zono.mat_t is star.a_mat
         assert self.zono.center is star.bias
@@ -257,7 +257,6 @@ class Prefilter(Freezable):
         #bounds = star.lpi._get_col_bounds()[-2:]
         self.zono.init_bounds.extend(additional_init_box)
 
-        ## how to contract the zonotope?
         """
         indexes = [2, 3] # 2 for p, 3 for theta
         print(star.input_bounds_witnesses)

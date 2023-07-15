@@ -187,7 +187,7 @@ class LpStarState(Freezable):
     def apply_dynamics_layer(self, network):
         'apply dynamics part of a layer'
 
-        Timers.tic('starstate.apply_linear_layer')
+        Timers.tic('starstate.apply_dynamics_layer')
 
         layer = network.layers[self.cur_layer]
         assert not isinstance(layer, ReluLayer)
@@ -215,12 +215,12 @@ class LpStarState(Freezable):
             self.star.input_bounds_witnesses[d][0] = min_wt
             self.star.input_bounds_witnesses[d][1] = max_wt
         
+
         for i in range(len(additional_init_box)):
             self.star.input_bounds_witnesses.append([witnesses_min, witnesses_max])
 
         self.prefilter.apply_dynamics_layer(layer, self.star, additional_init_box)
-
-        Timers.toc('starstate.apply_linear_layer')
+        Timers.toc('starstate.apply_dynamics_layer')
 
     def split_enumerate(self, i, network, spec, start_time):
         '''
