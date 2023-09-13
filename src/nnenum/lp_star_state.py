@@ -170,7 +170,7 @@ class LpStarState(Freezable):
         Timers.tic('starstate.apply_linear_layer')
 
         layer = network.layers[self.cur_layer]
-        assert not isinstance(layer, ReluLayer)
+        assert not isinstance(layer, ReluLayer) and not isinstance(layer, TaxiNetDynamicsLayer)
         assert self.star
         assert self.prefilter
 
