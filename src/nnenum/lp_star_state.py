@@ -200,24 +200,34 @@ class LpStarState(Freezable):
         self.prefilter.zono.mat_t = self.star.a_mat
         self.prefilter.zono.center = self.star.bias
 
-        witnesses_min = np.ones(len(self.star.input_bounds_witnesses)) * np.inf
-        witnesses_max = np.ones(len(self.star.input_bounds_witnesses)) * -np.inf
+        #dims = self.star.lpi.get_num_cols()
+        dims = 8 if self.cur_layer == 15 else 10
+        if self.star.input_bounds_witnesses is not None:
+            for dim in range(dims-2):
+                #vec = np.array([1 if i == dim else 0 for i in range(dims)], dtype=float)
+                #res = self.star.lpi.minimize(vec)
 
-        for d, (min_wt, max_wt) in enumerate(self.star.input_bounds_witnesses):
-            witnesses_min = np.minimum(witnesses_min, min_wt)
-            witnesses_max = np.maximum(witnesses_max, max_wt)
-            for i in range(len(additional_init_box)):
-                min_wt = np.append(min_wt, additional_init_box[i][0])
-                max_wt = np.append(max_wt, additional_init_box[i][1])
-                if d == len(self.star.input_bounds_witnesses) - 1:
-                    witnesses_min = np.append(witnesses_min, additional_init_box[i][0])
-                    witnesses_max = np.append(witnesses_max, additional_init_box[i][1])
-            self.star.input_bounds_witnesses[d][0] = min_wt
-            self.star.input_bounds_witnesses[d][1] = max_wt
-        
+                self.star.input_bounds_witnesses[dim][0] = \
+                    np.append(self.star.input_bounds_witnesses[dim][0], additional_init_box[:, 0])
+                self.star.input_bounds_witnesses[dim][1] = \
+                    np.append(self.star.input_bounds_witnesses[dim][1], additional_init_box[:, 1])
 
-        for i in range(len(additional_init_box)):
-            self.star.input_bounds_witnesses.append([witnesses_min, witnesses_max])
+                #print(res)
+                #print(self.star.input_bounds_witnesses[dim][0])
+                #print("----------------------------")
+            
+            # for the other two newly added dimensions, we solve lps to get the bounds
+            for dim in range(dims-2, dims):
+                self.star.input_bounds_witnesses.append([[], []])
+                # lb
+                vec = np.array([1 if i == dim else 0 for i in range(dims)], dtype=float)
+                res = self.star.lpi.minimize(vec)
+                self.star.input_bounds_witnesses[dim][0] = res
+
+                # ub
+                vec = np.array([-1 if i == dim else 0 for i in range(dims)], dtype=float)
+                res = self.star.lpi.minimize(vec)
+                self.star.input_bounds_witnesses[dim][1] = res
 
         self.prefilter.apply_dynamics_layer(layer, self.star, additional_init_box)
         Timers.toc('starstate.apply_dynamics_layer')
