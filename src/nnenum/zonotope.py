@@ -120,7 +120,13 @@ class Zonotope(Freezable):
         Timers.tic("contract_lp")
 
         #cur_box = self.init_bounds
-        new_bounds_list = star.update_input_box_bounds(hyperplane_vec, rhs, count_lps=True)
+        if star.input_bounds_witnesses is None and not Settings.CONTRACT_LP_OPTIMIZED:
+            dims = star.lpi.get_num_cols()
+            should_skip = np.zeros((dims, 2), dtype=bool)
+            new_bounds_list = star.update_input_box_bounds_old(None, should_skip)
+
+        else:
+            new_bounds_list = star.update_input_box_bounds(hyperplane_vec, rhs, count_lps=True, cur_box=self.init_bounds)
 
         for dim, lb, ub in new_bounds_list:
             self.update_init_bounds(dim, (lb, ub))
@@ -166,8 +172,15 @@ class Zonotope(Freezable):
 
         # update these
         if self.neg1_gens is not None:
-            self.neg1_gens[i] = lb
-            self.pos1_gens[i] = ub
+            if i == len(self.neg1_gens):
+                self.neg1_gens = np.append(self.neg1_gens, lb)
+                self.pos1_gens = np.append(self.pos1_gens, ub)
+            elif i < len(self.neg1_gens):
+                self.neg1_gens[i] = lb
+                self.pos1_gens[i] = ub
+            else:
+                assert False, f"i was {i} but len(self.neg1_gens) was {len(self.neg1_gens)}"
+            
 
     def maximize(self, vector):
         'get the maximum point of the zonotope in the passed-in direction'

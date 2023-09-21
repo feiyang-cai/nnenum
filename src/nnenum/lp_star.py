@@ -209,8 +209,8 @@ class LpStar(Freezable):
 
         rv = []
 
+        dims = self.lpi.get_num_cols()
         if self.input_bounds_witnesses is not None:
-            dims = self.lpi.get_num_cols()
 
             assert len(self.input_bounds_witnesses) == dims, \
                 f"dims:{dims}, num witneses: {len(self.input_bounds_witnesses)}"
@@ -238,7 +238,7 @@ class LpStar(Freezable):
 
         return rv
 
-    def update_input_box_bounds(self, hyperplane_vec_list, rhs_list, count_lps=True):
+    def update_input_box_bounds(self, hyperplane_vec_list, rhs_list, count_lps=True, cur_box=None):
         '''update the input box bounds on the set after some constaints are added
 
         hyperplane_vec_list and rhs_list (can also be individual items) 
@@ -249,7 +249,8 @@ class LpStar(Freezable):
         should_skip = np.ones((dims, 2), dtype=bool)
 
         # TODO: check if cur_box is the same as get_input_box_bounds
-        cur_box = self.get_input_box_bounds()
+        if cur_box is None:
+            cur_box = self.get_input_box_bounds()
 
         if not isinstance(hyperplane_vec_list, list):
             hyperplane_vec_list = [hyperplane_vec_list]
@@ -267,6 +268,9 @@ class LpStar(Freezable):
 
                     if should_skip[d, 1] and np.dot(hyperplane_vec, max_wit) > rhs:
                         should_skip[d, 1] = False
+        
+        else:
+            should_skip = np.zeros((dims, 2), dtype=bool)
 
         if Settings.CONTRACT_LP_OPTIMIZED and cur_box is not None:
             rv = self.update_input_box_bounds_new(cur_box, should_skip, count_lps)
@@ -372,7 +376,7 @@ class LpStar(Freezable):
                     if self.input_bounds_witnesses is not None:
                         self.input_bounds_witnesses[dim][1] = res
 
-                        vec[dim] = 0
+                    vec[dim] = 0
                     should_skip[dim, 1] = True
                     skipped_some = True
                 else:
