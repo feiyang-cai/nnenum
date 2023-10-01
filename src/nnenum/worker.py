@@ -64,9 +64,13 @@ class Worker(Freezable):
 
                 if self.priv.ss and not self.has_timeout():
                     start_time = time.perf_counter()
-                    self.advance_star()
-                    diff = time.perf_counter() - start_time
-                    self.add_branch_str(f"advance_star {round(diff * 1000, 3)} ms")
+                    try:
+                        self.advance_star()
+                        diff = time.perf_counter() - start_time
+                        self.add_branch_str(f"advance_star {round(diff * 1000, 3)} ms")
+                    except (RuntimeError, AssertionError) as error:
+                        print("discard a star since LP solver failed")
+                        self.discard_star()
 
             except LpCanceledException:
                 while Timers.stack and Timers.stack[-1].name != timer_name:
@@ -743,6 +747,43 @@ class Worker(Freezable):
             Timers.toc('update_shared')
             #########################
     
+    def discard_star(self):
+        'discarded with a concrete star state'
+
+        Timers.tic('discarded_star')
+
+        ss = self.priv.ss
+        assert ss is not None
+        violation_star = None
+
+        # update enumeration num lps before checking
+        self.priv.num_lps_enum += ss.star.num_lps
+
+        # accumulate stats
+        self.priv.finished_stars += 1
+        self.priv.num_lps += ss.star.num_lps
+
+        # branch_str
+        self.add_branch_str(f"concrete {'UNSAFE' if violation_star is not None else 'safe'}")
+
+
+        self.priv.ss = None
+
+        # local stats that get updates in update_shared_variables
+        self.priv.update_stars += 1
+        self.priv.update_work_frac += ss.work_frac
+        self.priv.update_stars_in_progress -= 1
+
+        if not self.priv.work_list:
+            # urgently update shared variables to try to get more work
+            self.priv.shared_update_urgent = True
+            self.priv.fulfillment_requested_time = time.perf_counter()
+
+        if Settings.PRINT_BRANCH_TUPLES:
+            print(self.priv.branch_tuples_list[-1])
+
+        Timers.toc('discarded_star')
+    
     def finished_star(self):
         'finished with a concrete star state'
 
@@ -837,6 +878,8 @@ class Worker(Freezable):
                 # note: new_star may be done... but for expected branching order we still add it
                 self.priv.stars_in_progress += 1
                 self.priv.work_list.append(new_star)
+
+
 
         Timers.toc('advance')
 

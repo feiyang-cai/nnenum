@@ -36,6 +36,7 @@ class Result(Freezable):
 
         # total number of stars explored during path enumeration
         self.total_stars = 0
+        self.total_error_stars = 0
 
         # data (3-tuple) about problem progress: (finished_stars, unfinished_stars, finished_work_frac)
         self.progress_tuple = (0, 0, 0)
@@ -49,6 +50,7 @@ class Result(Freezable):
 
             ###### assigned if Settings.RESULT_SAVE_STARS = True. Each entry is an LpStar ######
             self.stars = Result.manager.list()
+            self.error_stars = Result.manager.list()
 
             ###### below are assigned used if spec is not None and property is unsafe ######
             # counter-example boolean flags
