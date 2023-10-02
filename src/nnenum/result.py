@@ -52,6 +52,9 @@ class Result(Freezable):
             self.stars = Result.manager.list()
             self.error_stars = Result.manager.list()
 
+            self.reachable_cells = Result.manager.list()
+
+
             ###### below are assigned used if spec is not None and property is unsafe ######
             # counter-example boolean flags
             self.found_counterexample = multiprocessing.Value('i', 0)

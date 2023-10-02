@@ -69,7 +69,7 @@ def make_init_ss(init, network, spec, start_time):
 
     return ss
 
-def enumerate_network(init, network, spec=None):
+def enumerate_network(init, network, info_to_nnenum, spec=None):
     '''enumerate the branches in the network
 
     init can either be a 2-d list or an lp_star or an lp_star_state
@@ -147,7 +147,7 @@ def enumerate_network(init, network, spec=None):
         else:
             num_workers = 1 if Settings.NUM_PROCESSES < 1 else Settings.NUM_PROCESSES
 
-            shared = SharedState(network, spec, num_workers, start)
+            shared = SharedState(network, spec, num_workers, start, info_to_nnenum)
             shared.push_init(init_ss)
 
             if shared.result.result_str != 'safe': # easy specs can be proven safe in push_init()
@@ -217,6 +217,8 @@ def process_result(shared):
     # save num stars to result
     shared.result.total_stars = shared.finished_stars.value
 
+    shared.result.total_error_stars = shared.num_error_stars.value
+
     # save progress to result
     shared.result.progress_tuple = (shared.finished_stars.value,
                                     shared.unfinished_stars.value,
@@ -282,11 +284,13 @@ def process_result(shared):
     # save timers if requested
     for timer_name, count, secs in zip(Settings.RESULT_SAVE_TIMERS, shared.timer_counts, shared.timer_secs):
         shared.result.timers[timer_name] = (count, secs)
+    
+    shared.result.reachable_cells = set(shared.result.reachable_cells) 
 
 class SharedState(Freezable):
     'shared computation state across processes'
 
-    def __init__(self, network, spec, num_workers, start_time):
+    def __init__(self, network, spec, num_workers, start_time, info_to_nnenum):
         assert isinstance(network, NeuralNetwork)
         
         # process-local copies
@@ -296,6 +300,8 @@ class SharedState(Freezable):
         self.multithreaded = num_workers > 1
 
         self.start_time = start_time
+
+        self.info_to_nnenum = info_to_nnenum
 
         # master -> worker
         # this lock should be used whenever modifying shared variables or consistency is needed,
@@ -309,6 +315,8 @@ class SharedState(Freezable):
 
         # queue size is unreliable since multithreaded, use this instead
         self.stars_in_progress = multiprocessing.Value('i', 0)
+
+        self.num_error_stars = multiprocessing.Value('i', 0)
 
         # used for load balancing
         self.heap_sizes = multiprocessing.Array('i', num_workers)
@@ -427,6 +435,7 @@ class PrivateState(Freezable):
         self.num_lps_enum = 0
         self.incorrect_overapprox_count = 0
         self.incorrect_overapprox_time = 0
+        self.num_error_stars = 0
 
         self.stars_in_progress = 0
 

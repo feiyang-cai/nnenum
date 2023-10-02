@@ -398,6 +398,7 @@ class Worker(Freezable):
                 self.shared.finished_work_frac.value += self.priv.update_work_frac
                 self.shared.stars_in_progress.value += self.priv.update_stars_in_progress
 
+
                 self.shared.incorrect_overapprox_count.value += self.priv.incorrect_overapprox_count
                 self.shared.incorrect_overapprox_time.value += self.priv.incorrect_overapprox_time
 
@@ -773,6 +774,7 @@ class Worker(Freezable):
         self.priv.update_stars += 1
         self.priv.update_work_frac += ss.work_frac
         self.priv.update_stars_in_progress -= 1
+        self.shared.num_error_stars.value += 1
 
         if not self.priv.work_list:
             # urgently update shared variables to try to get more work
@@ -783,6 +785,95 @@ class Worker(Freezable):
             print(self.priv.branch_tuples_list[-1])
 
         Timers.toc('discarded_star')
+
+    def check_intersection(self, star, p_lb, p_ub, theta_lb, theta_ub):
+        # get the cell bounds
+        #p_lb = self.p_lbs[p_idx]
+        #p_ub = self.p_ubs[p_idx]
+        #theta_lb = self.theta_lbs[theta_idx]
+        #theta_ub = self.theta_ubs[theta_idx]
+
+        p_bias = star.bias[0]
+        theta_bias = star.bias[1]
+
+        if "ita" not in star.lpi.names:
+            p_mat = star.a_mat[0, :]
+            theta_mat = star.a_mat[1, :]
+
+            # add the objective variable 'ita'
+            star.lpi.add_cols(['ita'])
+
+            # add constraints
+
+            ## p_mat * p - ita <= p_ub - p_bias
+            p_mat_1 = np.hstack((p_mat, -1))
+            star.lpi.add_dense_row(p_mat_1, p_ub - p_bias)
+
+            ## -p_mat * p - ita <= -p_lb + p_bias
+            p_mat_2 = np.hstack((-p_mat, -1))
+            star.lpi.add_dense_row(p_mat_2, -p_lb + p_bias)
+
+            ## theta_mat * theta - ita <= theta_ub - theta_bias
+            theta_mat_1 = np.hstack((theta_mat, -1))
+            star.lpi.add_dense_row(theta_mat_1, theta_ub - theta_bias)
+
+            ## -theta_mat * theta - ita <= -theta_lb + theta_bias
+            theta_mat_2 = np.hstack((-theta_mat, -1))
+            star.lpi.add_dense_row(theta_mat_2, -theta_lb + theta_bias)
+
+        else:
+            rhs = star.lpi.get_rhs()
+            rhs[-4] = p_ub - p_bias
+            rhs[-3] = -p_lb + p_bias
+            rhs[-2] = theta_ub - theta_bias
+            rhs[-1] = -theta_lb + theta_bias
+            star.lpi.set_rhs(rhs)
+
+        direction_vec = [0] * star.lpi.get_num_cols()
+        direction_vec[-1] = 1
+        rv = star.lpi.minimize(direction_vec)
+        return rv[-1] <= 0.0
+    
+    def compute_reachable_cells(self, info_to_nnenum, star):
+        # comupute the box enclosing of the star
+        p_ub = star.minimize_output(0, True)
+        p_lb = star.minimize_output(0, False)
+        theta_ub = star.minimize_output(1, True)
+        theta_lb = star.minimize_output(1, False)
+
+        assert p_lb >= info_to_nnenum['p_lbs'][0] and p_ub <= info_to_nnenum['p_ubs'][-1]
+        assert theta_lb >= info_to_nnenum['theta_lbs'][0] and theta_ub <= info_to_nnenum['theta_ubs'][-1]
+
+        # get the lower and upper bound indices of the output interval
+        p_lb_idx = math.floor((p_lb - info_to_nnenum['p_lbs'][0])/(info_to_nnenum['p_ubs'][0]-info_to_nnenum['p_lbs'][0])) # floor
+        p_ub_idx = math.ceil((p_ub - info_to_nnenum['p_lbs'][0])/(info_to_nnenum['p_ubs'][0]-info_to_nnenum['p_lbs'][0])) # ceil
+
+        theta_lb_idx = math.floor((theta_lb - info_to_nnenum['theta_lbs'][0])/(info_to_nnenum['theta_ubs'][0]-info_to_nnenum['theta_lbs'][0])) # floor
+        theta_ub_idx = math.ceil((theta_ub - info_to_nnenum['theta_lbs'][0])/(info_to_nnenum['theta_ubs'][0]-info_to_nnenum['theta_lbs'][0])) # ceil
+
+        assert p_lb_idx >= 0 and p_ub_idx <= len(info_to_nnenum['p_lbs'])
+
+        theta_lb_idx = max(theta_lb_idx, 0)
+        theta_ub_idx = min(theta_ub_idx, len(info_to_nnenum['theta_lbs']))
+        #print(theta_lb_idx, )
+        assert theta_lb_idx < len(info_to_nnenum['theta_lbs']) and theta_ub_idx > 0
+        assert p_lb_idx <= p_ub_idx and theta_lb_idx <= theta_ub_idx
+
+        reachable_cells = []
+        if p_lb_idx == p_ub_idx -1 and theta_lb_idx == theta_ub_idx -1:
+            # actually no need to add this cell since the simulation must within this cell
+            pass
+        else:
+            for p_idx in range(p_lb_idx, p_ub_idx):
+                for theta_idx in range(theta_lb_idx, theta_ub_idx):
+                    if (p_idx, theta_idx) in info_to_nnenum['possible_cells']:
+                        ## check intersection
+                        try:
+                            if self.check_intersection(star, info_to_nnenum['p_lbs'][p_idx], info_to_nnenum['p_ubs'][p_idx], info_to_nnenum['theta_lbs'][theta_idx], info_to_nnenum['theta_ubs'][theta_idx]):
+                                reachable_cells.append((p_idx, theta_idx))
+                        except:
+                            print("warning: exception in check_intersection")
+        return reachable_cells
     
     def finished_star(self):
         'finished with a concrete star state'
@@ -801,6 +892,9 @@ class Worker(Freezable):
             self.save_poly(self.priv.ss)
 
         spec = self.shared.spec
+
+        reachable_cells = self.compute_reachable_cells(self.shared.info_to_nnenum, ss.star)
+        self.shared.result.reachable_cells.extend(reachable_cells)
 
         if spec is not None and spec.zono_might_violate_spec(ss.prefilter.zono):
             violation_star = self.shared.spec.get_violation_star(ss.star, safe_spec_list=ss.safe_spec_list)
