@@ -861,8 +861,8 @@ class Worker(Freezable):
 
         reachable_cells = []
         if p_lb_idx == p_ub_idx -1 and theta_lb_idx == theta_ub_idx -1:
-            # actually no need to add this cell since the simulation must within this cell
-            pass
+            if (p_lb_idx, p_ub_idx) in info_to_nnenum['possible_cells']:
+                reachable_cells.append((p_lb_idx, theta_lb_idx))
         else:
             for p_idx in range(p_lb_idx, p_ub_idx):
                 for theta_idx in range(theta_lb_idx, theta_ub_idx):
